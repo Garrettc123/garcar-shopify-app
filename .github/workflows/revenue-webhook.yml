@@ -1,0 +1,59 @@
+name: Revenue Webhook Handler
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_type:
+        description: 'Stripe event type'
+        required: true
+        default: 'payment_intent.succeeded'
+      amount:
+        description: 'Amount in cents'
+        required: true
+        default: '9900'
+      customer_email:
+        description: 'Customer email'
+        required: false
+        default: 'test@example.com'
+
+jobs:
+  handle-revenue-event:
+    name: Process Revenue Event
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Log Revenue Event
+        run: |
+          mkdir -p revenue-logs
+          echo '{
+            "event_type": "${{ github.event.inputs.event_type }}",
+            "amount_cents": ${{ github.event.inputs.amount }},
+            "amount_usd": $(echo "scale=2; ${{ github.event.inputs.amount }} / 100" | bc),
+            "customer": "${{ github.event.inputs.customer_email }}",
+            "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+            "run_id": "${{ github.run_id }}"
+          }' > revenue-logs/event-${{ github.run_id }}.json
+          cat revenue-logs/event-${{ github.run_id }}.json
+          
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK != ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.DEFENDER_SLACK_WEBHOOK }}
+        run: |
+          AMOUNT_USD=$(echo "scale=2; ${{ github.event.inputs.amount }} / 100" | bc)
+          curl -X POST $SLACK_WEBHOOK \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"💰 *REVENUE EVENT* | ${{ github.event.inputs.event_type }} | \$${AMOUNT_USD} | ${{ github.event.inputs.customer_email }}\",
+              \"username\": \"Garcar Revenue Bot\",
+              \"icon_emoji\": \":money_with_wings:\"
+            }" || echo 'Slack notify skipped'
+
+      - name: Commit Revenue Log
+        run: |
+          git config user.name 'Garcar Revenue Bot'
+          git config user.email 'revenue@garcar.ai'
+          git add revenue-logs/
+          git diff --staged --quiet || git commit -m "chore: log revenue event ${{ github.event.inputs.event_type }} run ${{ github.run_id }}"
+          git push || echo 'Nothing to push'
