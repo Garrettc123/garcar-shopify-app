@@ -1,16 +1,14 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// Garcar Enterprise — Shopify App
+// Prisma Schema
+// SQLite for dev, PostgreSQL for production
 
 generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = env("DATABASE_PROVIDER") // "sqlite" or "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
@@ -31,4 +29,37 @@ model Session {
   emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+// ── Garcar Enterprise Models ─────────────────────────────────────────────────
+
+model MerchantSubscription {
+  id          String   @id @default(cuid())
+  shop        String   @unique
+  plan        String   @default("starter")  // starter | pro | enterprise
+  status      String   @default("active")
+  stripeId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ChurnSignal {
+  id          String   @id @default(cuid())
+  shop        String
+  riskScore   Float
+  signals     String   // JSON array of churn indicators
+  predictedAt DateTime @default(now())
+
+  @@index([shop])
+}
+
+model RevenueEvent {
+  id          String   @id @default(cuid())
+  shop        String
+  eventType   String   // order_created | subscription_charged | refund
+  amount      Float
+  currency    String   @default("USD")
+  createdAt   DateTime @default(now())
+
+  @@index([shop])
 }

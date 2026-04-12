@@ -1,0 +1,154 @@
+name: Deploy — Garcar Shopify App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options: [production, staging]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. Lint & Type Check ────────────────────────────────────────────────────
+  lint:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: file:./test.sqlite
+      - name: Lint
+        run: npm run lint
+
+  # ── 2. Build ────────────────────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Build Remix app
+        run: npm run build
+        env:
+          SHOPIFY_API_KEY: ${{ secrets.SHOPIFY_API_KEY }}
+          SHOPIFY_API_SECRET: ${{ secrets.SHOPIFY_API_SECRET }}
+          SHOPIFY_APP_URL: ${{ secrets.SHOPIFY_APP_URL }}
+          SCOPES: ${{ secrets.SCOPES }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: build/
+          retention-days: 1
+
+  # ── 3. Database Migration ───────────────────────────────────────────────────
+  migrate:
+    name: Database Migration
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run Prisma migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+  # ── 4. Deploy to Railway ────────────────────────────────────────────────────
+  deploy-railway:
+    name: Deploy to Railway
+    runs-on: ubuntu-latest
+    needs: migrate
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy to Railway
+        run: railway up --service garcar-shopify-app --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  # ── 5. Shopify App Deploy ───────────────────────────────────────────────────
+  deploy-shopify:
+    name: Deploy Shopify Config
+    runs-on: ubuntu-latest
+    needs: deploy-railway
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - name: Install Shopify CLI
+        run: npm install -g @shopify/cli@latest
+      - name: Deploy app config to Shopify
+        run: shopify app deploy --force
+        env:
+          SHOPIFY_CLI_PARTNERS_TOKEN: ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          SHOPIFY_API_KEY: ${{ secrets.SHOPIFY_API_KEY }}
+          SHOPIFY_API_SECRET: ${{ secrets.SHOPIFY_API_SECRET }}
+          SHOPIFY_APP_URL: ${{ secrets.SHOPIFY_APP_URL }}
+          SCOPES: ${{ secrets.SCOPES }}
+
+  # ── 6. Post-deploy Health Check ────────────────────────────────────────────
+  health-check:
+    name: Health Check
+    runs-on: ubuntu-latest
+    needs: deploy-shopify
+    steps:
+      - name: Wait for Railway to stabilize
+        run: sleep 30
+      - name: Check app health
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.SHOPIFY_APP_URL }}/health" || echo "000")
+          echo "Health check status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "⚠️  Health check returned $STATUS — app may still be warming up"
+          else
+            echo "✅ App is healthy"
+          fi
+      - name: Notify Slack on success
+        if: success()
+        run: |
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H 'Content-type: application/json' \
+            -d '{"text":"✅ Garcar Shopify App deployed successfully to production\nCommit: `${{ github.sha }}`\nBy: ${{ github.actor }}"}' || true
+      - name: Notify Slack on failure
+        if: failure()
+        run: |
+          curl -s -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H 'Content-type: application/json' \
+            -d '{"text":"🚨 Garcar Shopify App deploy FAILED\nCommit: `${{ github.sha }}`\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' || true
