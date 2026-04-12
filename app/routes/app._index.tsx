@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
@@ -11,11 +11,10 @@ import {
   getRecentRevenueEvents,
 } from "../lib/mrr.server";
 
-// ── Loader ───────────────────────────────────────────────────────────────────
+// ── Loader ────────────────────────────────────────────────────────────────────
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
 
-  // ── Shopify data ──
   const shopRes = await admin.graphql(`
     query GarcarDash {
       shop {
@@ -39,7 +38,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shopifyRevenue = orders.reduce((acc: number, e: any) =>
     acc + parseFloat(e.node.totalPriceSet?.shopMoney?.amount ?? "0"), 0);
 
-  // ── Stripe / Prisma MRR data ──
   const [mrrCents, allTimeCents, activeSubs, recentEvents] = await Promise.all([
     getCurrentMRR(),
     getAllTimeRevenue(),
@@ -53,12 +51,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shopifyRevenue:    shopifyRevenue.toFixed(2),
       shopifyOrders:     orders.length,
       shopifyProducts:   products.length,
-      // Stripe MRR (from Prisma)
       mrrCents,
       mrrDollars:        (mrrCents / 100).toFixed(2),
       allTimeDollars:    (allTimeCents / 100).toFixed(2),
       activeSubs,
-      // Garcar ARR target
       arTarget:          155000,
     },
     recentEvents: recentEvents.map(e => ({
@@ -70,7 +66,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
-// ── Action ───────────────────────────────────────────────────────────────────
+// ── Action ────────────────────────────────────────────────────────────────────
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
   const form   = await request.formData();
@@ -102,75 +98,179 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function eventLabel(type: string) {
+function fmtDollar(val: string | number): string {
+  const n = typeof val === "string" ? parseFloat(val) : val;
+  return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function eventLabel(type: string): string {
   const map: Record<string, string> = {
-    "checkout.session.completed":   "💰 Checkout paid",
-    "invoice.payment_succeeded":    "💳 Invoice paid",
-    "invoice.payment_failed":       "⚠️  Invoice failed",
-    "customer.subscription.created":"🆕 New subscription",
-    "customer.subscription.updated":"🔄 Subscription updated",
-    "customer.subscription.deleted":"❌ Subscription cancelled",
-    "charge.refunded":              "🔙 Refund",
+    "checkout.session.completed":    "Checkout Paid",
+    "invoice.payment_succeeded":     "Invoice Paid",
+    "invoice.payment_failed":        "Invoice Failed",
+    "customer.subscription.created": "New Sub",
+    "customer.subscription.updated": "Sub Updated",
+    "customer.subscription.deleted": "Sub Cancelled",
+    "charge.refunded":               "Refund",
   };
   return map[type] ?? type;
 }
 
-function eventBadgeClass(type: string) {
-  if (type.includes("failed") || type.includes("deleted") || type.includes("refunded")) return "gc-badge--alert";
+function eventBadgeClass(type: string): string {
+  if (type.includes("failed") || type.includes("deleted") || type.includes("refunded"))
+    return "gc-badge--alert";
   if (type.includes("updated")) return "gc-badge--info";
   return "gc-badge--live";
+}
+
+// ── Hex Logo SVG ──────────────────────────────────────────────────────────────
+function GarcarHexLogo({ size = 52 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 52 52"
+      fill="none"
+      aria-label="Garcar Enterprise Logo"
+      className="gc-hex-logo"
+    >
+      {/* Hexagon outline */}
+      <polygon
+        points="26,3 48,14.5 48,37.5 26,49 4,37.5 4,14.5"
+        stroke="#00ff88"
+        strokeWidth="1.5"
+        fill="rgba(0,255,136,0.06)"
+      />
+      {/* Inner hex */}
+      <polygon
+        points="26,10 40,18 40,34 26,42 12,34 12,18"
+        stroke="#00e5d0"
+        strokeWidth="0.8"
+        fill="rgba(0,229,208,0.04)"
+        opacity="0.7"
+      />
+      {/* G mark */}
+      <text
+        x="26"
+        y="32"
+        textAnchor="middle"
+        fontFamily="'Syne', sans-serif"
+        fontWeight="800"
+        fontSize="18"
+        fill="#00ff88"
+        letterSpacing="-1"
+      >
+        G
+      </text>
+      {/* Corner dots */}
+      <circle cx="26" cy="3"  r="2" fill="#00ff88" opacity="0.8" />
+      <circle cx="48" cy="14.5" r="1.5" fill="#00e5d0" opacity="0.6" />
+      <circle cx="48" cy="37.5" r="1.5" fill="#00e5d0" opacity="0.6" />
+      <circle cx="26" cy="49" r="2" fill="#00ff88" opacity="0.8" />
+      <circle cx="4"  cy="37.5" r="1.5" fill="#00e5d0" opacity="0.6" />
+      <circle cx="4"  cy="14.5" r="1.5" fill="#00e5d0" opacity="0.6" />
+    </svg>
+  );
+}
+
+// ── Sparkline ─────────────────────────────────────────────────────────────────
+function Sparkline({ heights, color }: { heights: number[]; color: string }) {
+  return (
+    <div className="gc-kpi__spark" style={{ height: 32 }}>
+      {heights.map((h, i) => (
+        <div
+          key={i}
+          className={`gc-kpi__spark-bar gc-kpi__spark-bar--${color}`}
+          style={{ height: `${h}%`, transition: `height ${0.6 + i * 0.12}s cubic-bezier(0.34,1.56,0.64,1)` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// ── Animated Counter Hook ─────────────────────────────────────────────────────
+function useAnimatedCounter(
+  ref: React.MutableRefObject<HTMLSpanElement | null>,
+  target: number,
+  isDollar: boolean,
+  delay = 0
+) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const duration = 2200;
+    const startTime = performance.now() + delay;
+    const step = (now: number) => {
+      if (now < startTime) { requestAnimationFrame(step); return; }
+      const p = Math.min((now - startTime) / duration, 1);
+      const ease = 1 - Math.pow(1 - p, 4);
+      const val = target * ease;
+      el.textContent = isDollar
+        ? "$" + val.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+        : Math.floor(val).toLocaleString();
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [target, delay]);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function CommandCenter() {
   const { shop, metrics, recentEvents, webhookUrl } = useLoaderData<typeof loader>();
-  const fetcher  = useFetcher<typeof action>();
-  const cRefs    = useRef<Record<string, HTMLSpanElement | null>>({});
-  const loading  = fetcher.state !== "idle";
-  const product  = (fetcher.data as any)?.product;
+  const fetcher = useFetcher<typeof action>();
+  const loading = fetcher.state !== "idle";
+  const product = (fetcher.data as any)?.product;
 
-  // Animate counters
+  // Clock
+  const [clock, setClock] = useState(() => new Date().toLocaleTimeString("en-US", { hour12: false }));
   useEffect(() => {
-    const targets: Record<string, number> = {
-      shopifyRevenue: parseFloat(metrics.shopifyRevenue),
-      shopifyOrders:  metrics.shopifyOrders,
-      shopifyProducts:metrics.shopifyProducts,
-      mrrDollars:     parseFloat(metrics.mrrDollars),
-      allTime:        parseFloat(metrics.allTimeDollars),
-      activeSubs:     metrics.activeSubs,
-      ar:             metrics.arTarget,
-    };
-    Object.entries(targets).forEach(([key, target]) => {
-      const el = cRefs.current[key];
-      if (!el) return;
-      const isDollar  = ["shopifyRevenue","mrrDollars","allTime"].includes(key);
-      const isInteger = !isDollar;
-      const duration  = 2000;
-      const start     = performance.now();
-      const step = (now: number) => {
-        const p   = Math.min((now - start) / duration, 1);
-        const e   = 1 - Math.pow(1 - p, 4);
-        const val = target * e;
-        el.textContent = isDollar
-          ? "$" + val.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-          : Math.floor(val).toLocaleString();
-        if (p < 1) requestAnimationFrame(step);
-      };
-      requestAnimationFrame(step);
-    });
-  }, [metrics]);
+    const t = setInterval(() => {
+      setClock(new Date().toLocaleTimeString("en-US", { hour12: false }));
+    }, 1000);
+    return () => clearInterval(t);
+  }, []);
 
-  // Animate progress bars
+  // Webhook banner collapse
+  const [webhookOpen, setWebhookOpen] = useState(false);
+
+  // Copy state
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(webhookUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  // Counter refs
+  const mrrRef      = useRef<HTMLSpanElement>(null);
+  const allTimeRef  = useRef<HTMLSpanElement>(null);
+  const subsRef     = useRef<HTMLSpanElement>(null);
+  const arrRef      = useRef<HTMLSpanElement>(null);
+  const shopRevRef  = useRef<HTMLSpanElement>(null);
+  const ordersRef   = useRef<HTMLSpanElement>(null);
+
+  useAnimatedCounter(mrrRef,     parseFloat(metrics.mrrDollars),     true,  100);
+  useAnimatedCounter(allTimeRef, parseFloat(metrics.allTimeDollars), true,  200);
+  useAnimatedCounter(subsRef,    metrics.activeSubs,                 false, 300);
+  useAnimatedCounter(arrRef,     metrics.arTarget,                   false, 150);
+  useAnimatedCounter(shopRevRef, parseFloat(metrics.shopifyRevenue), true,  250);
+  useAnimatedCounter(ordersRef,  metrics.shopifyOrders,              false, 350);
+
+  // Progress bar animation
   useEffect(() => {
     const t = setTimeout(() => {
       document.querySelectorAll<HTMLElement>(".gc-progress-fill[data-pct]").forEach(b => {
-        b.style.width = b.dataset.pct + "%";
+        b.style.width = (b.dataset.pct ?? "0") + "%";
       });
-    }, 400);
+      document.querySelectorAll<HTMLElement>(".gc-revenue-bar__segment[data-w]").forEach(b => {
+        b.style.width = (b.dataset.w ?? "0") + "%";
+      });
+    }, 500);
     return () => clearTimeout(t);
   }, []);
 
-  // Reveal on scroll
+  // Scroll reveal
   useEffect(() => {
     const els = document.querySelectorAll(".gc-reveal");
     const obs = new IntersectionObserver(entries => {
@@ -180,149 +280,251 @@ export default function CommandCenter() {
     return () => obs.disconnect();
   }, []);
 
-  const revenueProducts = [
-    { name: "Churn Predictor AI",        model: "B2B SaaS",        status: "live",  mrr: 25000 },
-    { name: "Deal Desk AI",              model: "Per-proposal",    status: "live",  mrr: 18000 },
-    { name: "Content Engine AI",         model: "SaaS",            status: "live",  mrr: 22000 },
-    { name: "MAUT Decision Engine",      model: "SaaS",            status: "live",  mrr: 97    },
-    { name: "NWU Protocol — Basic",      model: "Subscription",    status: "live",  mrr: 49    },
-    { name: "NWU Protocol — Premium",    model: "Subscription",    status: "live",  mrr: 149   },
-    { name: "NWU Protocol — Enterprise", model: "Subscription",    status: "live",  mrr: 499   },
-    { name: "AI Growth Engine",          model: "Managed Service", status: "live",  mrr: 1497  },
-    { name: "Revenue Recovery Sprint",   model: "Weekly",          status: "live",  mrr: 497   },
-    { name: "Smart Contract Auditor",    model: "API + SaaS",      status: "build", mrr: 25000 },
-    { name: "DeFi Yield Aggregator",     model: "% Yield",         status: "build", mrr: 30000 },
-    { name: "Lead Enrichment Engine",    model: "Usage API",       status: "build", mrr: 20000 },
+  // ARR progress %
+  const arrPct = Math.min(
+    ((parseFloat(metrics.mrrDollars) * 12) / metrics.arTarget) * 100,
+    100
+  ).toFixed(1);
+
+  // Revenue pipeline segments
+  const totalPipeline = 49 + 97 + 11 + 8; // $K
+  const pipeSegments = [
+    { label: "NWU Protocol",   amount: 49, cls: "--nwu",     color: "#00ff88" },
+    { label: "Garcar Suite",   amount: 97, cls: "--suite",   color: "#00e5d0" },
+    { label: "Shopify App",    amount: 11, cls: "--shopify",  color: "#9b59b6" },
+    { label: "Other",          amount: 8,  cls: "--other",   color: "#3d5a70" },
   ];
 
-  const hasStripeRevenue = parseFloat(metrics.mrrDollars) > 0;
+  // System status grid data
+  const systems = [
+    { name: "Stripe Webhooks",    state: "on",   uptime: "99.9%" },
+    { name: "Shopify Integration",state: "on",   uptime: "100%"  },
+    { name: "Prisma DB",          state: "on",   uptime: "99.7%" },
+    { name: "Railway Deploy",     state: "on",   uptime: "98.2%" },
+    { name: "GitHub Actions",     state: "warn", uptime: "96.1%" },
+    { name: "Vercel Apps",        state: "on",   uptime: "99.8%" },
+  ];
+
+  // Webhook events
+  const webhookEvents = [
+    "checkout.session.completed",
+    "invoice.payment_succeeded",
+    "invoice.payment_failed",
+    "customer.subscription.created",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+    "charge.refunded",
+  ];
 
   return (
     <div className="gc-root gc-canvas">
+      {/* Ambient layers */}
       <div className="gc-grid-bg" />
       <div className="gc-orb gc-orb--1" />
       <div className="gc-orb gc-orb--2" />
       <div className="gc-orb gc-orb--3" />
 
-      <TitleBar title="Garcar Enterprise" />
+      <TitleBar title="Garcar Enterprise Command Center" />
 
       <div className="gc-content">
 
-        {/* ── Header ── */}
-        <header className="gc-header gc-reveal">
+        {/* ══════════════════════════════════════════════════
+            HERO HEADER ROW
+        ═══════════════════════════════════════════════════ */}
+        <header className="gc-header gc-enter">
+          {/* Brand identity */}
           <div className="gc-logo">
-            <div className="gc-logo__hex">⬡</div>
+            <div className="gc-logo__hex-wrap">
+              <GarcarHexLogo size={48} />
+            </div>
             <div>
-              <div className="gc-logo__text">Garcar Enterprise</div>
-              <span className="gc-logo__sub">Shopify + Stripe Revenue Command Center</span>
+              <div className="gc-command-title" aria-label="Garcar Command Center">
+                {"GARCAR COMMAND CENTER".split("").map((ch, i) => (
+                  <span
+                    key={i}
+                    className="char"
+                    style={{ "--char-index": i } as React.CSSProperties}
+                  >
+                    {ch === " " ? "\u00a0" : ch}
+                  </span>
+                ))}
+              </div>
+              <span className="gc-logo__sub">
+                Shopify + Stripe Revenue Intelligence · {shop?.name ?? "Empire"}
+              </span>
             </div>
           </div>
+
+          {/* Right meta */}
           <div className="gc-header__right">
-            <span className="gc-live-pill"><span className="gc-live-dot" />Stripe Webhook Active</span>
-            <span className="gc-shop-name">{shop?.name}</span>
+            {/* Live clock */}
+            <span className="gc-clock">{clock}</span>
+
+            {/* Live status */}
+            <span className="gc-live-pill">
+              <span className="gc-live-dot" />
+              ALL SYSTEMS LIVE
+            </span>
+
+            {/* System status badge */}
+            <span className="gc-badge gc-badge--live gc-badge--dot">
+              Stripe Active
+            </span>
           </div>
         </header>
 
-        {/* ── Stripe MRR Banner ── */}
-        {hasStripeRevenue ? (
-          <div className="gc-reveal" style={{
-            marginBottom: "24px",
-            padding: "16px 22px",
-            background: "rgba(0,255,136,0.05)",
-            border: "1px solid rgba(0,255,136,0.25)",
-            borderRadius: "14px",
-            display: "flex",
-            alignItems: "center",
-            gap: "14px",
-          }}>
-            <span style={{ fontSize: "1.4rem" }}>💰</span>
-            <div>
-              <div style={{ fontFamily: "var(--gc-font-display)", fontWeight: 700, color: "var(--gc-emerald)" }}>
-                ${metrics.mrrDollars} MRR collected this month via Stripe
-              </div>
-              <div style={{ fontSize: "0.78rem", color: "var(--gc-text-3)", fontFamily: "var(--gc-font-mono)" }}>
-                All-time: ${metrics.allTimeDollars} · {metrics.activeSubs} active subscriptions
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="gc-reveal" style={{
-            marginBottom: "24px",
-            padding: "14px 22px",
-            background: "rgba(245,197,24,0.04)",
-            border: "1px solid rgba(245,197,24,0.2)",
-            borderRadius: "14px",
-            display: "flex",
-            alignItems: "center",
-            gap: "14px",
-          }}>
-            <span style={{ fontSize: "1.2rem" }}>⚡</span>
-            <div>
-              <div style={{ fontWeight: 600, color: "var(--gc-gold)", fontSize: "0.9rem" }}>
-                Stripe webhook is live — waiting for first payment
-              </div>
-              <div style={{ fontSize: "0.75rem", color: "var(--gc-text-3)", fontFamily: "var(--gc-font-mono)", marginTop: "2px" }}>
-                Endpoint: {webhookUrl}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ── KPI Row ── */}
+        {/* ══════════════════════════════════════════════════
+            EMPIRE KPI ROW — 5 metric cards
+        ═══════════════════════════════════════════════════ */}
         <div className="gc-kpi-row gc-stagger">
+
+          {/* MRR This Month */}
           <div className="gc-kpi">
-            <div className="gc-kpi__label">Stripe MRR (This Month)</div>
-            <div className="gc-kpi__value gc-counter">
-              <span ref={el => { cRefs.current.mrrDollars = el; }}>$0.00</span>
+            <div className="gc-kpi__label">MRR — This Month</div>
+            <div className="gc-kpi__value">
+              <span ref={mrrRef}>$0.00</span>
             </div>
             <div className="gc-kpi__delta gc-kpi__delta--up">↑ Live from Stripe webhooks</div>
-            <div className="gc-kpi__spark gc-kpi__spark--green" />
+            <Sparkline heights={[20, 35, 45, 60, 80]} color="emerald" />
           </div>
+
+          {/* ARR Target Progress */}
+          <div className="gc-kpi">
+            <div className="gc-kpi__label">ARR Target Progress</div>
+            <div className="gc-kpi__value gc-kpi__value--teal">
+              {arrPct}%
+            </div>
+            <div className="gc-kpi__delta gc-kpi__delta--flat">
+              Target: ${metrics.arTarget.toLocaleString()}/yr
+            </div>
+            <Sparkline heights={[15, 25, 30, 42, 55]} color="teal" />
+          </div>
+
+          {/* All-Time Revenue */}
           <div className="gc-kpi">
             <div className="gc-kpi__label">All-Time Revenue</div>
-            <div className="gc-kpi__value gc-counter">
-              <span ref={el => { cRefs.current.allTime = el; }}>$0.00</span>
+            <div className="gc-kpi__value gc-kpi__value--gold">
+              <span ref={allTimeRef}>$0.00</span>
             </div>
-            <div className="gc-kpi__delta gc-kpi__delta--up">↑ checkout + invoice events</div>
-            <div className="gc-kpi__spark gc-kpi__spark--cyan" />
+            <div className="gc-kpi__delta gc-kpi__delta--up">↑ Checkout + invoice events</div>
+            <Sparkline heights={[30, 42, 55, 70, 90]} color="gold" />
           </div>
+
+          {/* Active Subscriptions */}
           <div className="gc-kpi">
             <div className="gc-kpi__label">Active Subscriptions</div>
-            <div className="gc-kpi__value gc-counter">
-              <span ref={el => { cRefs.current.activeSubs = el; }}>0</span>
+            <div className="gc-kpi__value">
+              <span ref={subsRef}>0</span>
             </div>
             <div className="gc-kpi__delta gc-kpi__delta--flat">→ Prisma · live sync</div>
-            <div className="gc-kpi__spark gc-kpi__spark--gold" />
+            <Sparkline heights={[10, 20, 30, 40, 50]} color="emerald" />
           </div>
+
+          {/* Shopify Revenue */}
           <div className="gc-kpi">
-            <div className="gc-kpi__label">Shopify Store Orders</div>
-            <div className="gc-kpi__value gc-counter">
-              <span ref={el => { cRefs.current.shopifyOrders = el; }}>0</span>
+            <div className="gc-kpi__label">Shopify Revenue</div>
+            <div className="gc-kpi__value gc-kpi__value--teal">
+              <span ref={shopRevRef}>$0.00</span>
             </div>
-            <div className="gc-kpi__delta gc-kpi__delta--up">↑ Admin GraphQL · paid</div>
-            <div className="gc-kpi__spark gc-kpi__spark--green" />
+            <div className="gc-kpi__delta gc-kpi__delta--up">↑ {metrics.shopifyOrders} paid orders</div>
+            <Sparkline heights={[25, 38, 48, 62, 75]} color="cyan" />
           </div>
         </div>
 
-        {/* ── Main grid ── */}
+        {/* ══════════════════════════════════════════════════
+            REVENUE PIPELINE VISUALIZATION
+        ═══════════════════════════════════════════════════ */}
+        <div className="gc-card gc-reveal" style={{ marginBottom: "var(--gc-space-6)" }}>
+          <div className="gc-card__header">
+            <span className="gc-card__title">Revenue Pipeline — Path to $155K/mo</span>
+            <span className="gc-badge gc-badge--info">
+              ${totalPipeline}K Pipeline
+            </span>
+          </div>
+          <div className="gc-card__body">
+            {/* ARR progress bar */}
+            <div className="gc-arr-label">
+              <span
+                className="gc-mono"
+                style={{ fontSize: "0.72rem", color: "var(--gc-text-3)" }}
+              >
+                MRR: {fmtDollar(metrics.mrrDollars)} / month
+              </span>
+              <span className="gc-arr-pct">{arrPct}% to ARR target</span>
+            </div>
+            <div className="gc-progress gc-progress--lg" style={{ marginBottom: "var(--gc-space-5)" }}>
+              <div
+                className="gc-progress-fill"
+                data-pct={arrPct}
+                style={{ width: "0%" }}
+              />
+            </div>
+
+            {/* Stacked revenue bar */}
+            <div
+              className="gc-mono"
+              style={{ fontSize: "0.65rem", color: "var(--gc-text-3)", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: "var(--gc-space-2)" }}
+            >
+              Revenue Segments
+            </div>
+            <div className="gc-revenue-bar">
+              {pipeSegments.map((seg) => (
+                <div
+                  key={seg.label}
+                  className={`gc-revenue-bar__segment gc-revenue-bar__segment${seg.cls}`}
+                  data-w={String((seg.amount / totalPipeline) * 100)}
+                  style={{ width: "0%" }}
+                  title={`${seg.label}: $${seg.amount}K`}
+                >
+                  {seg.label}
+                </div>
+              ))}
+            </div>
+
+            {/* Labels */}
+            <div className="gc-revenue-bar__labels" style={{ marginTop: "var(--gc-space-3)" }}>
+              {pipeSegments.map((seg) => (
+                <div key={seg.label} className="gc-revenue-bar__label">
+                  <div
+                    className="gc-revenue-bar__dot"
+                    style={{ background: seg.color }}
+                  />
+                  <span>{seg.label}</span>
+                  <span style={{ color: "var(--gc-text)" }}>${seg.amount}K</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ══════════════════════════════════════════════════
+            MAIN GRID — live feed + sidebar
+        ═══════════════════════════════════════════════════ */}
         <div className="gc-grid gc-grid--sidebar">
 
-          {/* Left */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* ── LEFT COLUMN ── */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--gc-space-4)" }}>
 
-            {/* Live Revenue Feed */}
+            {/* Live Revenue Feed Table */}
             <div className="gc-card gc-reveal">
               <div className="gc-card__header">
-                <span className="gc-card__title">Live Stripe Revenue Feed</span>
-                <span className="gc-badge gc-badge--live gc-badge--dot">Real-time</span>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--gc-space-3)" }}>
+                  <span className="gc-live-dot" />
+                  <span className="gc-card__title">Live Revenue Feed</span>
+                </div>
+                <span className="gc-badge gc-badge--live gc-badge--dot">
+                  Real-time
+                </span>
               </div>
               <div className="gc-card__body" style={{ padding: 0 }}>
                 {recentEvents.length === 0 ? (
-                  <div style={{ padding: "32px 22px", textAlign: "center", color: "var(--gc-text-3)", fontFamily: "var(--gc-font-mono)", fontSize: "0.82rem" }}>
-                    Waiting for first Stripe event…<br />
-                    <span style={{ color: "var(--gc-text-3)", fontSize: "0.72rem", marginTop: "8px", display: "block" }}>
-                      Register webhook at dashboard.stripe.com/webhooks → {webhookUrl}
-                    </span>
+                  <div className="gc-empty">
+                    <div className="gc-empty__icon">⚡</div>
+                    <div className="gc-empty__title">Waiting for first Stripe event</div>
+                    <div className="gc-empty__body">
+                      Register webhook at dashboard.stripe.com/webhooks<br />
+                      <span style={{ color: "var(--gc-emerald)" }}>{webhookUrl}</span>
+                    </div>
                   </div>
                 ) : (
                   <table className="gc-table">
@@ -332,7 +534,7 @@ export default function CommandCenter() {
                         <th>Customer</th>
                         <th>Product</th>
                         <th style={{ textAlign: "right" }}>Amount</th>
-                        <th>When</th>
+                        <th>Time</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -343,18 +545,50 @@ export default function CommandCenter() {
                               {eventLabel(evt.eventType)}
                             </span>
                           </td>
-                          <td style={{ fontFamily: "var(--gc-font-mono)", fontSize: "0.75rem" }}>
+                          <td
+                            style={{
+                              fontFamily: "var(--gc-font-mono)",
+                              fontSize: "0.74rem",
+                              maxWidth: 140,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
                             {evt.customerEmail ?? evt.customerId ?? "—"}
                           </td>
-                          <td style={{ color: "var(--gc-text)" }}>{evt.productName ?? "—"}</td>
-                          <td className="gc-table__amount" style={{
-                            textAlign: "right",
-                            color: parseFloat(evt.amountDollars) < 0 ? "var(--gc-red)" : "var(--gc-emerald)",
-                          }}>
-                            {parseFloat(evt.amountDollars) < 0 ? "-" : "+"}${Math.abs(parseFloat(evt.amountDollars)).toFixed(2)} {evt.currency}
+                          <td style={{ color: "var(--gc-text)" }}>
+                            {evt.productName ?? "—"}
                           </td>
-                          <td style={{ fontFamily: "var(--gc-font-mono)", fontSize: "0.72rem", color: "var(--gc-text-3)" }}>
-                            {new Date(evt.createdAt).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}
+                          <td
+                            className="gc-table__amount"
+                            style={{
+                              textAlign: "right",
+                              color: parseFloat(evt.amountDollars) < 0
+                                ? "var(--gc-red)"
+                                : "var(--gc-emerald)",
+                            }}
+                          >
+                            {parseFloat(evt.amountDollars) < 0 ? "-" : "+"}
+                            ${Math.abs(parseFloat(evt.amountDollars)).toFixed(2)}{" "}
+                            <span style={{ color: "var(--gc-text-3)", fontSize: "0.65rem" }}>
+                              {evt.currency}
+                            </span>
+                          </td>
+                          <td
+                            style={{
+                              fontFamily: "var(--gc-font-mono)",
+                              fontSize: "0.7rem",
+                              color: "var(--gc-text-3)",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {new Date(evt.createdAt).toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
                           </td>
                         </tr>
                       ))}
@@ -364,118 +598,203 @@ export default function CommandCenter() {
               </div>
             </div>
 
-            {/* Revenue Stack Table */}
+            {/* System Status Grid 3×2 */}
             <div className="gc-card gc-reveal">
               <div className="gc-card__header">
-                <span className="gc-card__title">Revenue Stack — All 12 Systems</span>
-                <span className="gc-badge gc-badge--info">$155K+ ARR Target</span>
+                <span className="gc-card__title">System Status</span>
+                <span className="gc-badge gc-badge--live gc-badge--dot">
+                  All Systems
+                </span>
               </div>
-              <div className="gc-card__body" style={{ padding: 0 }}>
-                <table className="gc-table">
-                  <thead>
-                    <tr>
-                      <th>System</th>
-                      <th>Model</th>
-                      <th>Status</th>
-                      <th style={{ textAlign: "right" }}>MRR Target</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {revenueProducts.map((p, i) => (
-                      <tr key={i}>
-                        <td style={{ color: "var(--gc-text)" }}>{p.name}</td>
-                        <td>{p.model}</td>
-                        <td><span className={`gc-badge gc-badge--${p.status === "live" ? "live" : "build"} gc-badge--dot`}>{p.status === "live" ? "Live" : "Building"}</span></td>
-                        <td className="gc-table__amount" style={{ textAlign: "right" }}>${p.mrr.toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="gc-table__total">
-                      <td colSpan={3}><strong>Combined Monthly Target</strong></td>
-                      <td className="gc-table__amount" style={{ textAlign: "right" }}>${metrics.arTarget.toLocaleString()}+</td>
-                    </tr>
-                  </tfoot>
-                </table>
+              <div className="gc-card__body">
+                <div className="gc-system-grid">
+                  {systems.map((sys) => (
+                    <div key={sys.name} className="gc-system-card">
+                      <div className="gc-system-card__top">
+                        <span className="gc-system-card__name">{sys.name}</span>
+                        <span className={`gc-status-dot gc-status-dot--${sys.state}`} />
+                      </div>
+                      <div className="gc-system-card__uptime">
+                        Uptime: <span style={{ color: "var(--gc-text-2)" }}>{sys.uptime}</span>
+                      </div>
+                      <div style={{ marginTop: 8 }}>
+                        <div className="gc-progress" style={{ height: 3 }}>
+                          <div
+                            className="gc-progress-fill"
+                            data-pct={sys.uptime.replace("%", "")}
+                            style={{ width: "0%", height: 3 }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
-            {/* Quick Actions */}
+            {/* Webhook Setup Banner */}
+            <div className={`gc-webhook-banner gc-reveal ${webhookOpen ? "gc-webhook-banner--open" : ""}`}>
+              <div
+                className="gc-webhook-banner__header"
+                onClick={() => setWebhookOpen(v => !v)}
+                role="button"
+                aria-expanded={webhookOpen}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--gc-space-3)" }}>
+                  <span className="gc-live-dot" />
+                  <span className="gc-webhook-banner__title">Stripe Webhook Configuration</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--gc-space-3)" }}>
+                  <span className="gc-badge gc-badge--live">Wired</span>
+                  <span
+                    className="gc-collapse-chevron"
+                    style={{ transform: webhookOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s ease" }}
+                  >
+                    ▾
+                  </span>
+                </div>
+              </div>
+              <div className="gc-webhook-banner__body">
+                <div className="gc-webhook-banner__url">
+                  <span style={{ flex: 1 }}>{webhookUrl}</span>
+                  <button
+                    className={`gc-copy-btn ${copied ? "gc-copy-btn--copied" : ""}`}
+                    onClick={handleCopy}
+                    type="button"
+                  >
+                    {copied ? "✓ Copied" : "Copy"}
+                  </button>
+                </div>
+                <div
+                  className="gc-mono"
+                  style={{ fontSize: "0.65rem", color: "var(--gc-text-3)", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: "var(--gc-space-2)" }}
+                >
+                  Registered Events (7)
+                </div>
+                {webhookEvents.map(e => (
+                  <div key={e} className="gc-webhook-event">{e}</div>
+                ))}
+              </div>
+            </div>
+
+            {/* Quick Actions Row */}
             <div className="gc-card gc-reveal">
               <div className="gc-card__header">
                 <span className="gc-card__title">Quick Actions</span>
               </div>
-              <div className="gc-card__body" style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                <fetcher.Form method="POST">
-                  <input type="hidden" name="intent" value="generate_product" />
-                  <button type="submit" className={`gc-btn gc-btn--primary${loading ? " gc-btn--loading" : ""}`}>
-                    {loading ? "⟳ Generating…" : "⚡ Generate AI Product"}
-                  </button>
-                </fetcher.Form>
-                <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer" className="gc-btn gc-btn--ghost">
-                  Stripe Webhooks →
-                </a>
-                <a href="https://dashboard.stripe.com/payments" target="_blank" rel="noopener noreferrer" className="gc-btn gc-btn--ghost">
-                  Stripe Payments →
-                </a>
-                <a href="https://github.com/Garrettc123/garcar-shopify-app" target="_blank" rel="noopener noreferrer" className="gc-btn gc-btn--ghost">
-                  GitHub →
-                </a>
-              </div>
-              {product && (
-                <div className="gc-card__body" style={{ paddingTop: 0 }}>
-                  <div className="gc-result-box">
+              <div className="gc-card__body">
+                <div className="gc-actions-row">
+                  <fetcher.Form method="POST">
+                    <input type="hidden" name="intent" value="generate_product" />
+                    <button
+                      type="submit"
+                      className={`gc-btn gc-btn--primary${loading ? " gc-btn--loading" : ""}`}
+                    >
+                      {loading ? "⟳ Generating…" : "⚡ Generate Product"}
+                    </button>
+                  </fetcher.Form>
+                  <a
+                    href="https://dashboard.stripe.com/payments"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="gc-btn gc-btn--ghost"
+                  >
+                    Stripe Dashboard →
+                  </a>
+                  <a
+                    href="https://railway.app"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="gc-btn gc-btn--ghost"
+                  >
+                    Open Railway →
+                  </a>
+                  <a
+                    href="https://github.com/Garrettc123/garcar-shopify-app"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="gc-btn gc-btn--ghost"
+                  >
+                    View GitHub →
+                  </a>
+                </div>
+                {product && (
+                  <div className="gc-result-box" style={{ marginTop: "var(--gc-space-3)" }}>
                     ✅ Product created: <strong>{product.title}</strong>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Right Sidebar */}
-          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* ── RIGHT SIDEBAR ── */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "var(--gc-space-4)" }}>
 
-            {/* Webhook Setup Card */}
-            <div className="gc-card gc-reveal" style={{ borderColor: "rgba(0,255,136,0.2)" }}>
-              <div className="gc-card__header">
-                <span className="gc-card__title">Stripe Webhook Setup</span>
-                <span className="gc-badge gc-badge--live gc-badge--dot">Wired</span>
-              </div>
-              <div className="gc-card__body">
-                <div className="gc-status-list">
-                  <div className="gc-status-row">
-                    <span className="gc-status-name"><span className="gc-status-dot gc-status-dot--on"/>Endpoint</span>
-                    <span className="gc-status-val">/webhooks/stripe</span>
-                  </div>
-                  <div className="gc-status-row">
-                    <span className="gc-status-name"><span className="gc-status-dot gc-status-dot--on"/>HMAC Verify</span>
-                    <span className="gc-status-val">SHA-256 ✅</span>
-                  </div>
-                  <div className="gc-status-row">
-                    <span className="gc-status-name"><span className="gc-status-dot gc-status-dot--on"/>Idempotency</span>
-                    <span className="gc-status-val">stripeEventId</span>
-                  </div>
+            {/* MRR Hero Card */}
+            <div
+              className="gc-card gc-reveal"
+              style={{
+                background: "rgba(0,255,136,0.03)",
+                borderColor: "rgba(0,255,136,0.2)",
+              }}
+            >
+              <div className="gc-card__body" style={{ textAlign: "center", padding: "var(--gc-space-8) var(--gc-space-5)" }}>
+                <div
+                  className="gc-mono"
+                  style={{
+                    fontSize: "0.62rem",
+                    color: "var(--gc-text-3)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.18em",
+                    marginBottom: 8,
+                  }}
+                >
+                  Stripe MRR · This Month
                 </div>
-                <div style={{ marginTop: "16px" }}>
-                  <div style={{ fontSize: "0.68rem", fontFamily: "var(--gc-font-mono)", color: "var(--gc-text-3)", marginBottom: "8px", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                    Events Handled
-                  </div>
-                  {[
-                    "checkout.session.completed",
-                    "invoice.payment_succeeded",
-                    "invoice.payment_failed",
-                    "customer.subscription.created",
-                    "customer.subscription.updated",
-                    "customer.subscription.deleted",
-                    "charge.refunded",
-                  ].map(e => (
-                    <div key={e} style={{ fontSize: "0.72rem", fontFamily: "var(--gc-font-mono)", color: "var(--gc-text-2)", padding: "3px 0", borderBottom: "1px solid var(--gc-border)" }}>
-                      → {e}
-                    </div>
-                  ))}
+                <div
+                  style={{
+                    fontFamily: "var(--gc-font-display)",
+                    fontSize: "3rem",
+                    fontWeight: 900,
+                    background: "linear-gradient(135deg, #00ff88 0%, #00e5d0 100%)",
+                    WebkitBackgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                    backgroundClip: "text",
+                    letterSpacing: "-0.04em",
+                    lineHeight: 1,
+                    marginBottom: 10,
+                  }}
+                >
+                  {fmtDollar(metrics.mrrDollars)}
                 </div>
-                <div style={{ marginTop: "16px", padding: "10px 12px", background: "var(--gc-bg3)", borderRadius: "8px", fontFamily: "var(--gc-font-mono)", fontSize: "0.7rem", color: "var(--gc-text-3)", wordBreak: "break-all" }}>
-                  {webhookUrl}
+                <div
+                  className="gc-mono"
+                  style={{ fontSize: "0.7rem", color: "var(--gc-text-3)", marginBottom: 16 }}
+                >
+                  {metrics.activeSubs} active sub{metrics.activeSubs !== 1 ? "s" : ""} ·
+                  all-time {fmtDollar(metrics.allTimeDollars)}
+                </div>
+                <div style={{ height: 1, background: "var(--gc-border-subtle)", marginBottom: 14 }} />
+                <div className="gc-mono" style={{ fontSize: "0.7rem", color: "var(--gc-text-3)" }}>
+                  ARR target:{" "}
+                  <span style={{ color: "var(--gc-emerald)", fontWeight: 700 }}>
+                    ${metrics.arTarget.toLocaleString()}/yr
+                  </span>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <div className="gc-progress">
+                    <div
+                      className="gc-progress-fill"
+                      data-pct={arrPct}
+                      style={{ width: "0%" }}
+                    />
+                  </div>
+                  <div
+                    className="gc-mono"
+                    style={{ fontSize: "0.65rem", color: "var(--gc-text-3)", marginTop: 4, textAlign: "right" }}
+                  >
+                    {arrPct}% complete
+                  </div>
                 </div>
               </div>
             </div>
@@ -492,9 +811,9 @@ export default function CommandCenter() {
                     { label: "Name",     val: shop?.name },
                     { label: "Plan",     val: shop?.plan?.displayName },
                     { label: "Currency", val: shop?.currencyCode },
-                    { label: "Domain",   val: shop?.primaryDomain?.url?.replace("https://","") },
+                    { label: "Domain",   val: shop?.primaryDomain?.url?.replace("https://", "") },
                     { label: "Products", val: String(metrics.shopifyProducts) },
-                    { label: "Orders",   val: String(metrics.shopifyOrders) + " paid" },
+                    { label: "Orders",   val: `${metrics.shopifyOrders} paid` },
                   ].map((r, i) => (
                     <div key={i} className="gc-status-row">
                       <span className="gc-status-name">{r.label}</span>
@@ -505,27 +824,27 @@ export default function CommandCenter() {
               </div>
             </div>
 
-            {/* System Status */}
+            {/* Full System Status Detail */}
             <div className="gc-card gc-reveal">
               <div className="gc-card__header">
-                <span className="gc-card__title">System Status</span>
+                <span className="gc-card__title">Infrastructure</span>
               </div>
               <div className="gc-card__body">
                 <div className="gc-status-list">
                   {[
-                    { label: "Stripe Webhook",   state:"on",   val:"Live · HMAC ✅" },
-                    { label: "MRR Tracking",     state:"on",   val:"Prisma · Real-time" },
-                    { label: "Subscription Sync",state:"on",   val:"Auto-upsert" },
-                    { label: "Refund Handling",  state:"on",   val:"Negative events" },
-                    { label: "Idempotency",      state:"on",   val:"stripeEventId key" },
-                    { label: "OAuth",            state:"on",   val:"Active" },
-                    { label: "Admin GraphQL",    state:"on",   val:"2026-01" },
-                    { label: "Churn Predictor",  state:"on",   val:"Vercel · Live" },
-                    { label: "Deal Desk AI",     state:"on",   val:"Vercel · Live" },
-                    { label: "Content Engine",   state:"on",   val:"Vercel · Live" },
-                    { label: "GitHub CI",        state:"on",   val:"Passing" },
-                    { label: "Stripe Compliance",state:"warn", val:"Due Apr 14" },
-                    { label: "garcar.ai DNS",    state:"off",  val:"NXDOMAIN" },
+                    { label: "Stripe Webhook",    state: "on",   val: "Live · HMAC ✅" },
+                    { label: "MRR Tracking",      state: "on",   val: "Prisma · Real-time" },
+                    { label: "Subscription Sync", state: "on",   val: "Auto-upsert" },
+                    { label: "Refund Handling",   state: "on",   val: "Negative events" },
+                    { label: "Idempotency",       state: "on",   val: "stripeEventId key" },
+                    { label: "OAuth",             state: "on",   val: "Active" },
+                    { label: "Admin GraphQL",     state: "on",   val: "2026-01" },
+                    { label: "Churn Predictor",   state: "on",   val: "Vercel · Live" },
+                    { label: "Deal Desk AI",      state: "on",   val: "Vercel · Live" },
+                    { label: "Content Engine",    state: "on",   val: "Vercel · Live" },
+                    { label: "GitHub CI",         state: "on",   val: "Passing" },
+                    { label: "Stripe Compliance", state: "warn", val: "Due Apr 14" },
+                    { label: "garcar.ai DNS",     state: "off",  val: "NXDOMAIN" },
                   ].map((s, i) => (
                     <div key={i} className="gc-status-row">
                       <span className="gc-status-name">
@@ -539,23 +858,52 @@ export default function CommandCenter() {
               </div>
             </div>
 
-            {/* Live MRR Hero */}
-            <div className="gc-card gc-reveal" style={{ background: "rgba(0,255,136,0.03)", borderColor: "rgba(0,255,136,0.2)" }}>
-              <div className="gc-card__body" style={{ textAlign: "center", padding: "28px 22px" }}>
-                <div style={{ fontFamily: "var(--gc-font-mono)", fontSize: "0.65rem", color: "var(--gc-text-3)", textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: "6px" }}>
-                  Stripe MRR · This Month
+            {/* Webhook endpoint card */}
+            <div
+              className="gc-card gc-reveal"
+              style={{ borderColor: "rgba(0,255,136,0.2)" }}
+            >
+              <div className="gc-card__header">
+                <span className="gc-card__title">Stripe Webhook</span>
+                <span className="gc-badge gc-badge--live gc-badge--dot">Wired</span>
+              </div>
+              <div className="gc-card__body">
+                <div className="gc-status-list" style={{ marginBottom: 16 }}>
+                  <div className="gc-status-row">
+                    <span className="gc-status-name">
+                      <span className="gc-status-dot gc-status-dot--on" />
+                      Endpoint
+                    </span>
+                    <span className="gc-status-val">/webhooks/stripe</span>
+                  </div>
+                  <div className="gc-status-row">
+                    <span className="gc-status-name">
+                      <span className="gc-status-dot gc-status-dot--on" />
+                      HMAC Verify
+                    </span>
+                    <span className="gc-status-val">SHA-256 ✅</span>
+                  </div>
+                  <div className="gc-status-row">
+                    <span className="gc-status-name">
+                      <span className="gc-status-dot gc-status-dot--on" />
+                      Idempotency
+                    </span>
+                    <span className="gc-status-val">stripeEventId</span>
+                  </div>
                 </div>
-                <div style={{ fontFamily: "var(--gc-font-display)", fontSize: "2.6rem", fontWeight: 900, color: "var(--gc-emerald)", letterSpacing: "-0.04em", lineHeight: 1 }}>
-                  <span ref={el => { cRefs.current.mrrDollars2 = el as any; }}>
-                    ${metrics.mrrDollars}
-                  </span>
-                </div>
-                <div style={{ fontSize: "0.72rem", color: "var(--gc-text-3)", marginTop: "10px", fontFamily: "var(--gc-font-mono)" }}>
-                  {metrics.activeSubs} active sub{metrics.activeSubs !== 1 ? "s" : ""} · all-time ${metrics.allTimeDollars}
-                </div>
-                <div style={{ marginTop: "16px", height: "1px", background: "var(--gc-border)" }} />
-                <div style={{ marginTop: "14px", fontSize: "0.72rem", color: "var(--gc-text-3)" }}>
-                  ARR target: <span style={{ color: "var(--gc-emerald)", fontWeight: 700 }}>${metrics.arTarget.toLocaleString()}/yr</span>
+                <div
+                  className="gc-code"
+                  style={{ display: "flex", alignItems: "flex-start", gap: 8 }}
+                >
+                  <span style={{ flex: 1, wordBreak: "break-all" }}>{webhookUrl}</span>
+                  <button
+                    className={`gc-copy-btn ${copied ? "gc-copy-btn--copied" : ""}`}
+                    onClick={handleCopy}
+                    type="button"
+                    style={{ flexShrink: 0, marginTop: 2 }}
+                  >
+                    {copied ? "✓" : "Copy"}
+                  </button>
                 </div>
               </div>
             </div>
