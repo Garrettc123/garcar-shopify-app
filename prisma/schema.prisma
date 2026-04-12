@@ -1,16 +1,16 @@
 // Garcar Enterprise — Shopify App
-// Prisma Schema
-// SQLite for dev, PostgreSQL for production
+// Prisma Schema — Stripe MRR Pipeline Edition
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = env("DATABASE_PROVIDER") // "sqlite" or "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
+// ── Shopify OAuth Sessions ───────────────────────────────────────────────────
 model Session {
   id                  String    @id
   shop                String
@@ -31,18 +31,55 @@ model Session {
   refreshTokenExpires DateTime?
 }
 
-// ── Garcar Enterprise Models ─────────────────────────────────────────────────
-
+// ── Merchant Subscriptions ───────────────────────────────────────────────────
 model MerchantSubscription {
-  id          String   @id @default(cuid())
-  shop        String   @unique
-  plan        String   @default("starter")  // starter | pro | enterprise
-  status      String   @default("active")
-  stripeId    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  shop                 String   @unique
+  plan                 String   @default("starter")
+  status               String   @default("active")
+  stripeId             String?
+  stripeSubscriptionId String?  @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([status])
 }
 
+// ── Revenue Events (Stripe webhook payloads) ─────────────────────────────────
+// Every paid event from Stripe lands here with idempotency via stripeEventId.
+// Refunds are written as negative amountCents to offset MRR naturally.
+model RevenueEvent {
+  id            String   @id @default(cuid())
+  stripeEventId String   @unique          // idempotency key
+  eventType     String                    // checkout.session.completed | invoice.payment_succeeded | ...
+  amountCents   Int                       // in smallest currency unit; negative for refunds
+  currency      String   @default("USD")
+  customerId    String?
+  customerEmail String?
+  productName   String?
+  metadata      String?                   // JSON blob of Stripe metadata
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([eventType])
+  @@index([customerId])
+}
+
+// ── MRR Snapshots ────────────────────────────────────────────────────────────
+// Computed snapshots written by the MRR reconciliation job (GitHub Actions cron).
+// Used for trend data on the dashboard sparklines.
+model MrrSnapshot {
+  id          String   @id @default(cuid())
+  snapshotAt  DateTime @default(now())
+  mrrCents    Int                           // total MRR in cents for that period
+  subCount    Int      @default(0)          // active subscription count
+  period      String                        // e.g. "2026-04"
+
+  @@unique([period])
+  @@index([snapshotAt])
+}
+
+// ── Churn Signals ────────────────────────────────────────────────────────────
 model ChurnSignal {
   id          String   @id @default(cuid())
   shop        String
@@ -51,15 +88,5 @@ model ChurnSignal {
   predictedAt DateTime @default(now())
 
   @@index([shop])
-}
-
-model RevenueEvent {
-  id          String   @id @default(cuid())
-  shop        String
-  eventType   String   // order_created | subscription_charged | refund
-  amount      Float
-  currency    String   @default("USD")
-  createdAt   DateTime @default(now())
-
-  @@index([shop])
+  @@index([riskScore])
 }

@@ -1,70 +1,111 @@
 #!/usr/bin/env bash
-# ════════════════════════════════════════════════════════════
-#  Garcar Enterprise — Shopify App Bootstrap
-#  Usage: bash setup.sh
-# ════════════════════════════════════════════════════════════
-set -e
+# ─────────────────────────────────────────────────────────────────────────────
+# Garcar Shopify App · One-Command Bootstrap
+# Usage: bash setup.sh
+# ─────────────────────────────────────────────────────────────────────────────
 
-REPO="Garrettc123/garcar-shopify-app"
-BOLD="\033[1m"; GREEN="\033[32m"; YELLOW="\033[33m"; RED="\033[31m"; RESET="\033[0m"
+set -euo pipefail
 
-print() { echo -e "${BOLD}$1${RESET}"; }
-ok()    { echo -e "${GREEN}✅ $1${RESET}"; }
-warn()  { echo -e "${YELLOW}⚠️  $1${RESET}"; }
-err()   { echo -e "${RED}❌ $1${RESET}"; exit 1; }
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-print "\n🛒 Garcar Enterprise Shopify App — Bootstrap\n"
+header() { echo -e "\n${CYAN}── $1 ──────────────────────────────────────────${NC}"; }
+ok()     { echo -e "${GREEN}✓ $1${NC}"; }
+warn()   { echo -e "${YELLOW}⚠  $1${NC}"; }
+fail()   { echo -e "${RED}✗ $1${NC}"; exit 1; }
 
-# ── 1. Check deps ──
-command -v node >/dev/null 2>&1 || err "Node.js is required (>=20)"
-command -v npm  >/dev/null 2>&1 || err "npm is required"
-command -v gh   >/dev/null 2>&1 || err "GitHub CLI (gh) is required"
+echo -e "${CYAN}"
+echo "  ██████╗  █████╗ ██████╗  ██████╗ █████╗ ██████╗ "
+echo " ██╔════╝ ██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗"
+echo " ██║  ███╗███████║██████╔╝██║     ███████║██████╔╝"
+echo " ██║   ██║██╔══██║██╔══██╗██║     ██╔══██║██╔══██╗"
+echo " ╚██████╔╝██║  ██║██║  ██║╚██████╗██║  ██║██║  ██║"
+echo "  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝"
+echo -e "${NC}"
+echo "  Shopify App · Bootstrap Script"
+echo "  ────────────────────────────────────────────────────"
 
-# ── 2. Install deps ──
-print "Installing dependencies..."
-npm install
-ok "Dependencies installed"
+# ── 1. Node version check ────────────────────────────────────────────────────
+header "Node.js"
+NODE_VER=$(node --version 2>/dev/null || echo "none")
+if [[ "$NODE_VER" == "none" ]]; then
+  fail "Node.js not found. Install v20+: https://nodejs.org"
+fi
+ok "Node $NODE_VER"
 
-# ── 3. Generate Prisma client ──
-print "Setting up database..."
+# ── 2. Install dependencies ──────────────────────────────────────────────────
+header "Dependencies"
+npm install --legacy-peer-deps
+ok "npm install complete"
+
+# ── 3. .env setup ────────────────────────────────────────────────────────────
+header ".env"
+if [ ! -f .env ]; then
+  cp .env.example .env
+  warn ".env created from .env.example — fill in your credentials"
+else
+  ok ".env already exists"
+fi
+
+# ── 4. Prisma ────────────────────────────────────────────────────────────────
+header "Prisma"
 npx prisma generate
-npx prisma migrate deploy 2>/dev/null || npx prisma db push
-ok "Database ready"
+ok "Prisma client generated"
+npx prisma db push
+ok "Database schema pushed"
 
-# ── 4. Collect Shopify credentials ──
-print "\n📋 You need two things from partners.shopify.com → Apps → [Your App] → API credentials:\n"
-read -p "  SHOPIFY_API_KEY: " SHOPIFY_API_KEY
-read -p "  SHOPIFY_API_SECRET: " SHOPIFY_API_SECRET
-read -p "  SHOPIFY_APP_URL (Railway URL, e.g. https://garcar.railway.app): " SHOPIFY_APP_URL
-read -p "  SHOPIFY_CLI_PARTNERS_TOKEN (from Settings → Partner API clients): " SHOPIFY_CLI_PARTNERS_TOKEN
+# ── 5. GitHub Secrets (optional — requires gh CLI + GITHUB_REPO set) ─────────
+header "GitHub Secrets"
+if ! command -v gh &> /dev/null; then
+  warn "gh CLI not found — skipping GitHub secrets push"
+  warn "Install: https://cli.github.com"
+else
+  REPO="${GITHUB_REPO:-Garrettc123/garcar-shopify-app}"
+  echo "Pushing secrets to github.com/${REPO} ..."
 
-# ── 5. Write .env ──
-cat > .env << ENV
-SHOPIFY_API_KEY=${SHOPIFY_API_KEY}
-SHOPIFY_API_SECRET=${SHOPIFY_API_SECRET}
-SHOPIFY_APP_URL=${SHOPIFY_APP_URL}
-SCOPES=write_products,read_products,read_orders,write_orders,read_customers,write_customers,read_inventory,write_inventory
-DATABASE_PROVIDER=sqlite
-DATABASE_URL=file:./prisma/dev.sqlite
-SHOPIFY_CLI_PARTNERS_TOKEN=${SHOPIFY_CLI_PARTNERS_TOKEN}
-ENV
-ok ".env written"
+  push_secret() {
+    local name="$1"
+    local value="${!name:-}"
+    if [ -n "$value" ]; then
+      echo "$value" | gh secret set "$name" -R "$REPO" --body -
+      ok "Secret set: $name"
+    else
+      warn "Skipping $name (not set in environment)"
+    fi
+  }
 
-# ── 6. Push GitHub secrets ──
-print "Pushing secrets to GitHub Actions..."
-gh secret set SHOPIFY_API_KEY       --repo "$REPO" --body "$SHOPIFY_API_KEY"
-gh secret set SHOPIFY_API_SECRET    --repo "$REPO" --body "$SHOPIFY_API_SECRET"
-gh secret set SHOPIFY_APP_URL       --repo "$REPO" --body "$SHOPIFY_APP_URL"
-gh secret set SHOPIFY_CLI_PARTNERS_TOKEN --repo "$REPO" --body "$SHOPIFY_CLI_PARTNERS_TOKEN"
-gh secret set SCOPES                --repo "$REPO" --body "write_products,read_products,read_orders,write_orders,read_customers,write_customers,read_inventory,write_inventory"
-ok "GitHub secrets set"
+  # Source .env to pick up values
+  set -a; source .env 2>/dev/null || true; set +a
 
-# ── 7. Dev server prompt ──
-print "\n✅ Setup complete!\n"
-echo "Next steps:"
-echo "  1. Run: npm run dev     ← starts local dev server + Shopify tunnel"
-echo "  2. At the prompt, select your dev store"
-echo "  3. Shopify CLI will create the app in your Partner Dashboard automatically"
-echo "  4. Once the client_id appears, run this script again to push it to GitHub"
+  push_secret "SHOPIFY_API_KEY"
+  push_secret "SHOPIFY_API_SECRET"
+  push_secret "SHOPIFY_APP_URL"
+  push_secret "SHOPIFY_CLI_PARTNERS_TOKEN"
+  push_secret "DATABASE_URL"
+  push_secret "RAILWAY_TOKEN"
+  push_secret "SLACK_WEBHOOK_URL"
+  push_secret "STRIPE_SECRET_KEY"
+  push_secret "STRIPE_WEBHOOK_SECRET"
+fi
+
+# ── 6. Done ──────────────────────────────────────────────────────────────────
 echo ""
-warn "Railway deploy requires RAILWAY_TOKEN and DATABASE_URL — add those in Railway dashboard"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}  Bootstrap complete.${NC}"
+echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+echo "  Next steps:"
+echo "  1. Fill in .env with your Shopify + Stripe credentials"
+echo "  2. Register Stripe webhook at dashboard.stripe.com/webhooks"
+echo "     → Endpoint: \$SHOPIFY_APP_URL/webhooks/stripe"
+echo "     → Events: checkout.session.completed, invoice.payment_succeeded,"
+echo "               invoice.payment_failed, customer.subscription.created,"
+echo "               customer.subscription.updated, customer.subscription.deleted,"
+echo "               charge.refunded"
+echo "  3. Copy whsec_... into .env as STRIPE_WEBHOOK_SECRET"
+echo "  4. Start dev server: npm run dev"
+echo "  5. Test webhooks:    bash scripts/stripe-test.sh"
+echo ""
